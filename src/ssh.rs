@@ -7,8 +7,8 @@ pub fn new_connection_private_key(address: String, port: String, username: Strin
     let mut sess = Session::new().unwrap();
     sess.set_tcp_stream(tcp);
     sess.handshake().unwrap();
-    let auth_result = sess.userauth_pubkey_file(&username,None,&Path::new(&key),None);
-    println!("{:?}",auth_result);
+    let auth_result = sess.userauth_pubkey_file(&username, None, &Path::new(&key), None);
+    println!("{:?}", auth_result);
 }
 
 pub fn new_connection_password(address: String, port: String, username: String, password: String) {
@@ -17,5 +17,5 @@ pub fn new_connection_password(address: String, port: String, username: String, 
     sess.set_tcp_stream(tcp);
     sess.handshake().unwrap();
     let auth_result = sess.userauth_password(&username, &password);
-    println!("{:?}",auth_result);
+    println!("{:?}", auth_result);
 }
