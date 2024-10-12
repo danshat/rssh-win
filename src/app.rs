@@ -1,34 +1,15 @@
-use crate::app::egui::Context;
-use crate::app::egui::Order;
+use config::Session;
 use eframe::egui;
-use eframe::egui::Ui;
+use regex::Regex;
+use rfd::FileDialog;
 
 mod config;
-
-// For now, only private key auth and password auth implemented
-#[derive(PartialEq, Default)]
-enum AuthModes {
-    #[default]
-    PasswordAuth,
-    KeyFileAuth,
-}
-// as_str implementation to map enum to strings for Combobox
-impl AuthModes {
-    fn as_str(&self) -> &str {
-        match self {
-            AuthModes::KeyFileAuth => "Private key",
-            AuthModes::PasswordAuth => "Password",
-        }
-    }
-}
+use config::AuthModes;
 
 pub struct MyApp {
     config: config::AppConfiguration,
     add_session_open: bool,
-    add_session_ip: String,
-    add_session_port: String,
-    add_session_username: String,
-    add_session_auth_mode: AuthModes,
+    session: Session,
 }
 
 impl Default for MyApp {
@@ -36,51 +17,106 @@ impl Default for MyApp {
         MyApp {
             config: config::AppConfiguration::new(),
             add_session_open: false,
-            add_session_ip: String::from(""),
-            add_session_port: String::from("22"),
-            add_session_username: String::from(""),
-            add_session_auth_mode: AuthModes::PasswordAuth,
+            session: Session::new(),
         }
     }
 }
 
 impl MyApp {
-    pub fn new(cc: &eframe::CreationContext<'_>) -> Self {
+    pub fn new(_cc: &eframe::CreationContext<'_>) -> Self {
         Self::default()
     }
     // New session popup window
-    fn add_session_window(&mut self, ctx: &egui::Context) {
+    fn add_session_window(&mut self, ctx: &egui::Context) -> anyhow::Result<()> {
         egui::Window::new("Add new session").show(ctx, |ui| {
             ui.label("Host IP: ");
-            ui.text_edit_singleline(&mut self.add_session_ip);
+            ui.text_edit_singleline(&mut self.session.ip);
             ui.label("Port: ");
-            ui.text_edit_singleline(&mut self.add_session_port);
+            let mut port_text: String = self.session.port.to_string();
+            if ui.text_edit_singleline(&mut port_text).changed() {
+                let re = Regex::new(r"[^0-9]+").unwrap();
+                port_text = re.replace_all(&port_text, "").to_string();
+            };
+            let new_port = port_text.parse::<i32>();
+            if new_port.is_ok() { 
+                let new_port_unwrapped = new_port.unwrap();
+                if (0..65536).contains(&new_port_unwrapped) {
+                    self.session.port = new_port_unwrapped;
+                }
+            };
             ui.label("Username: ");
-            ui.text_edit_singleline(&mut self.add_session_username);
+            let mut username_text: String = String::from("");
+            if self.session.username.is_some() {
+                username_text = self.session.username.as_ref().unwrap().to_string();
+            }
+            if ui.text_edit_singleline(&mut username_text).changed {
+                if !username_text.is_empty() {
+                    self.session.username = Some(username_text);
+                } else {
+                    self.session.username = None;
+                }
+            };
             ui.label("Authentication mode: ");
             egui::ComboBox::from_label("")
-                .selected_text(self.add_session_auth_mode.as_str())
+                .selected_text(self.session.auth_method.as_str())
                 .show_ui(ui, |ui| {
                     ui.selectable_value(
-                        &mut self.add_session_auth_mode,
+                        &mut self.session.auth_method,
                         AuthModes::PasswordAuth,
                         "Password",
                     );
                     ui.selectable_value(
-                        &mut self.add_session_auth_mode,
+                        &mut self.session.auth_method,
                         AuthModes::KeyFileAuth,
                         "Private key",
                     );
                 });
-            ui.horizontal(|ui| {
-                if ui.button("Add").clicked() {}
+            if self.session.auth_method == AuthModes::PasswordAuth {
+                ui.label("Password: ");
+                let mut password_text = String::from("");
+                if ui.text_edit_singleline(&mut password_text).changed() {
+                    if !password_text.is_empty() {
+                        self.session.password = Some(password_text);
+                    } else {
+                        self.session.password = None;
+                    }
+                };
+            } else {
+                ui.label("Key path: ");
+                let mut file_path: String = String::from("");
+                if self.session.key_path.is_some() {
+                    file_path = self
+                        .session
+                        .key_path
+                        .as_ref()
+                        .unwrap()
+                        .to_str()
+                        .unwrap()
+                        .to_string();
+                }
+
+                if ui.text_edit_singleline(&mut file_path).clicked() {
+                    let files = FileDialog::new()
+                        .pick_file();
+                    if files.is_some() {
+                        file_path = files.unwrap().to_str().unwrap().to_string();
+                    }
+                };
+                self.session.key_path = Some(file_path.into());
+            }
+            ui.horizontal(|ui| -> anyhow::Result<()> {
+                if ui.button("Add").clicked() {
+                    self.session.write_config(&self.config)?;
+                    self.add_session_open = false;
+
+                }
                 if ui.button("Close").clicked() {
                     self.add_session_open = !self.add_session_open;
-                    self.add_session_ip = String::new();
-                    self.add_session_port = String::from("22");
                 }
+                Ok(())
             });
         });
+        Ok(())
     }
 
     // Sessions panel
@@ -92,6 +128,7 @@ impl MyApp {
                 ui.horizontal(|ui| {
                     if ui.button("Add").clicked() {
                         self.add_session_open = true;
+                        self.session = Session::new();
                     };
                     ui.button("Edit");
                     ui.button("Delete");
@@ -105,7 +142,7 @@ impl MyApp {
 }
 
 impl eframe::App for MyApp {
-    fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+    fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) -> () {
         egui::TopBottomPanel::top("header").show(ctx, |ui| {
             ui.heading("rSSH-Win");
         });

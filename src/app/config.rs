@@ -1,10 +1,57 @@
-use crate::app::egui::{Context, Ui};
-use directories::{BaseDirs, ProjectDirs, UserDirs};
-use eframe::App;
-use std::fs::File;
+use directories::ProjectDirs;
+use serde::{Deserialize, Serialize};
 use std::fs::OpenOptions;
 use std::io::ErrorKind;
-use std::{env, fs, path::Path};
+use std::path::PathBuf;
+use std::fs;
+
+// For now, only private key auth and password auth implemented
+#[derive(PartialEq, Default, Serialize, Deserialize, Debug)]
+pub enum AuthModes {
+    #[default]
+    PasswordAuth,
+    KeyFileAuth,
+}
+// as_str implementation to map enum to strings for Combobox
+impl AuthModes {
+    pub fn as_str(&self) -> &str {
+        match self {
+            AuthModes::KeyFileAuth => "Private key",
+            AuthModes::PasswordAuth => "Password",
+        }
+    }
+}
+
+
+#[derive(Serialize, Deserialize, Debug)]
+pub struct Session {
+    pub ip: String,
+    pub port: i32,
+    pub username: Option<String>,
+    pub auth_method: AuthModes,
+    pub key_path: Option<PathBuf>,
+    pub password: Option<String>,
+}
+
+
+
+impl Session {
+    pub fn write_config(&mut self, config: &AppConfiguration) -> anyhow::Result<()> {
+        let file_path = config.directories.data_dir().join("sessions.rssh");
+        let serialized = bincode::serialize(&self)?;
+        Ok(fs::write(file_path, serialized)?)
+    }
+    pub fn new() -> Self {
+        Session {
+            ip: String::from(""),
+            port: 22,
+            username: None,
+            auth_method: AuthModes::PasswordAuth,
+            key_path: None,
+            password: None,
+        }
+    }
+}
 
 pub struct AppConfiguration {
     directories: ProjectDirs,
@@ -24,7 +71,7 @@ impl AppConfiguration {
 
 impl AppConfiguration {
     fn create_files(&self, dirs: &ProjectDirs) {
-        let mut file = OpenOptions::new()
+        OpenOptions::new()
             .create(true)
             .read(true)
             .append(true)
@@ -52,7 +99,5 @@ impl AppConfiguration {
             }
         }
     }
-
-    // ~/.local/share/rssh-win
 }
-fn add_new_session(ctx: &Context, ui: &mut Ui) {}
+
