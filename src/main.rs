@@ -1,5 +1,4 @@
 mod app;
-mod ssh;
 use app::MyApp;
 
 fn main() -> eframe::Result {

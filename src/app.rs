@@ -1,4 +1,6 @@
-use std::collections::HashMap;
+use std::sync::mpsc;
+use std::sync::mpsc::{Receiver, Sender};
+use std::{collections::HashMap, thread};
 
 use config::Session;
 use eframe::egui;
@@ -7,11 +9,14 @@ use rfd::FileDialog;
 
 mod config;
 use config::AuthModes;
+mod ssh;
 
 pub struct MyApp {
     app_config: config::AppConfiguration,
     add_session_open: bool,
     add_session: Session,
+    ssh_thread_channels: Vec<Receiver<String>>,
+    buffer: String,
 }
 
 impl Default for MyApp {
@@ -20,6 +25,8 @@ impl Default for MyApp {
             app_config: config::AppConfiguration::new().unwrap(),
             add_session_open: false,
             add_session: Session::new(),
+            ssh_thread_channels: Vec::new(),
+            buffer: String::new(),
         }
     }
 }
@@ -109,7 +116,10 @@ impl MyApp {
             }
             ui.horizontal(|ui| -> anyhow::Result<()> {
                 if ui.button("Add").clicked() {
-                    self.app_config.configuration.sessions.push(self.add_session.clone());
+                    self.app_config
+                        .configuration
+                        .sessions
+                        .push(self.add_session.clone());
                     self.app_config.save_config()?;
                     self.app_config.load_data()?;
                     self.add_session_open = false;
@@ -124,44 +134,112 @@ impl MyApp {
     }
 
     // Sessions panel
-    fn left_panel(&mut self, ctx: &egui::Context) {
+    fn left_panel(&mut self, ctx: &egui::Context) -> anyhow::Result<()> {
         egui::SidePanel::left("session_panel")
             .width_range(225.0..=600.0)
             .resizable(true)
             .show(ctx, |ui| {
-                ui.horizontal(|ui| {
+                ui.horizontal(|ui| -> anyhow::Result<()> {
                     if ui.button("Add").clicked() {
                         self.add_session_open = true;
                         self.add_session = Session::new();
                     };
                     ui.button("Edit");
-                    ui.button("Delete");
+                    if ui.button("Delete").clicked() {
+                        for (index, selected) in self.app_config.session_selected.iter().enumerate()
+                        {
+                            if *selected {
+                                self.app_config.configuration.sessions.remove(index);
+                                self.app_config.save_config()?;
+                                self.app_config.load_data()?;
+                                break;
+                            }
+                        }
+                    };
                     ui.separator();
-                    ui.button("Connect");
+                    if ui.button("Connect").clicked() {
+                        for (index, selected) in self.app_config.session_selected.iter().enumerate()
+                        {
+                            if *selected {
+                                let session_to_connect =
+                                    self.app_config.configuration.sessions[index].clone();
+                                if session_to_connect.auth_method == AuthModes::PasswordAuth {
+                                    let session = ssh::new_connection_password(
+                                        session_to_connect.ip,
+                                        session_to_connect.port,
+                                        session_to_connect.username,
+                                        session_to_connect.password.unwrap(),
+                                    )
+                                    .unwrap();
+                                    println!("New thread");
+                                    let (tx, rx): (Sender<String>, Receiver<String>) =
+                                        mpsc::channel();
+                                    thread::spawn(|| {
+                                        ssh::handle_session(session, tx);
+                                    });
+                                    self.ssh_thread_channels.push(rx);
+                                } else if session_to_connect.auth_method == AuthModes::KeyFileAuth {
+                                    let session = ssh::new_connection_private_key(
+                                        session_to_connect.ip,
+                                        session_to_connect.port,
+                                        session_to_connect.username,
+                                        session_to_connect.key_path.unwrap(),
+                                    )
+                                    .unwrap();
+                                    println!("New thread");
+                                    let (tx, rx): (Sender<String>, Receiver<String>) =
+                                        mpsc::channel();
+                                    thread::spawn(|| {
+                                        ssh::handle_session(session, tx);
+                                    });
+                                    self.ssh_thread_channels.push(rx);
+                                }
+                                break;
+                            }
+                        }
+                    }
+                    Ok(())
                 });
                 ui.separator();
                 ui.heading("Saved Sessions");
                 for (index, session) in self.app_config.configuration.sessions.iter().enumerate() {
-                    if ui.selectable_label(self.app_config.session_selected[index], &session.ip).clicked() {
-                        self.app_config.session_selected = vec![false; self.app_config.session_selected.len()];
+                    if ui
+                        .selectable_label(self.app_config.session_selected[index], &session.name)
+                        .clicked()
+                    {
+                        self.app_config.session_selected =
+                            vec![false; self.app_config.session_selected.len()];
                         self.app_config.session_selected[index] = true;
                     };
                 }
             });
+        Ok(())
+    }
+    fn central_panel(&mut self, ctx: &egui::Context) -> anyhow::Result<()> {
+        egui::CentralPanel::default().show(ctx, |ui| {
+            ui.label(self.buffer.clone());
+        });
+        Ok(())
     }
 }
 
 impl eframe::App for MyApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) -> () {
+        
         egui::TopBottomPanel::top("header").show(ctx, |ui| {
             ui.heading("rSSH-Win");
         });
 
-        self.left_panel(ctx);
-        egui::CentralPanel::default().show(ctx, |ui| {});
-
+        self.left_panel(ctx).unwrap();
+        self.central_panel(ctx).unwrap();
+        if !self.ssh_thread_channels.is_empty() {
+            let text = self.ssh_thread_channels[0].try_recv();
+            if text.is_ok() {
+                self.buffer = self.buffer.clone() + &text.unwrap();
+            }
+        }
         if self.add_session_open {
-            self.add_session_window(ctx);
+            self.add_session_window(ctx).unwrap();
         }
     }
 }
